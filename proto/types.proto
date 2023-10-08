@@ -1,0 +1,39 @@
+syntax = "proto3";
+package tutorial;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "pbsb/";
+
+message SubscribeRequest {
+  string topic = 1;
+}
+
+message SubscribeResponse {
+  bool success = 1;
+}
+
+message PublishRequest {
+  string topic = 1;
+  string message = 2;
+}
+
+// not sure we will need so much in here
+message PublishResponse {
+  bool success = 1;
+}
+
+message Message {
+  string topic = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message ClientMessage {
+  oneof request {
+    SubscribeRequest subscribe_request = 1;
+    Message message = 2;
+  }   
+}
+
+
