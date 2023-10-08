@@ -103,12 +103,14 @@ func (b *Broker) AddConnection(conn net.Conn) {
 func (b *Broker) RemoveConnection(conn net.Conn) {
 	b.Connections.Remove(conn)
 	b.listnerLock.Lock()
-	defer b.listnerLock.Unlock()
 
 	if channel, ok := b.ListnerLookup[conn.RemoteAddr().String()]; ok {
 		b.listnerLock.Unlock()
 		b.RemoveListener(channel, conn.RemoteAddr().String())
+	} else {
+		b.listnerLock.Unlock()
 	}
+
 }
 
 func (b *Broker) AddChannel(channel *Channel) {
@@ -238,7 +240,6 @@ func (b *Broker) HandleConnection(conn net.Conn) {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			b.RemoveConnection(conn)
 			log.Printf("client disconnected")
 			return
 		}
@@ -299,10 +300,16 @@ func (b *Broker) Serve(port string) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			if err == net.ErrClosed {
+				break
+			}
 			log.Printf("error accepting connection: %v", err)
 			continue
 		}
-		go b.HandleConnection(conn)
+		go func(conn net.Conn) {
+			b.HandleConnection(conn)
+			b.RemoveConnection(conn)
+		}(conn)
 	}
 }
 
