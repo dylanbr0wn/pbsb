@@ -1,8 +1,9 @@
 package client
 
 import (
+	"encoding/binary"
 	"errors"
-	"log"
+	"fmt"
 	"net"
 
 	"github.com/dylanbr0wn/pbsb/gen/pbsb"
@@ -13,12 +14,14 @@ import (
 type Client struct {
 	Channel    string
 	Connection net.Conn
+	Queue      chan []byte
 }
 
 func NewClient() *Client {
 	return &Client{
 		Channel:    "",
 		Connection: nil,
+		Queue:      make(chan []byte, 2048),
 	}
 }
 
@@ -27,16 +30,17 @@ func (c *Client) Connect(brokerAddr string) error {
 	if err != nil {
 		return err
 	}
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	buf := make([]byte, 1)
+	_, err = conn.Read(buf)
 	if err != nil {
 		return err
 	}
-	if string(buf[:n]) != "welcome" {
+	res := buf[0]
+	if res != byte(1) {
 		return errors.New("invalid welcome message")
 	}
 	c.Connection = conn
-	log.Println("connected to broker with address:", brokerAddr)
+	fmt.Printf("connected to broker with address: %s\n", brokerAddr)
 	return nil
 }
 
@@ -66,17 +70,13 @@ func (c *Client) Subscribe(channel string) error {
 	if err != nil {
 		return err
 	}
-	log.Println("Waiting for response...")
-	buf := make([]byte, 1024)
-	n, err := c.Connection.Read(buf)
+	buf := make([]byte, 1)
+	_, err = c.Connection.Read(buf)
 	if err != nil {
 		return err
 	}
-	res := &pbsb.SubscribeResponse{}
-	if proto.Unmarshal(buf[:n], res); err != nil {
-		return errors.New("invalid response from broker")
-	}
-	if !res.Success {
+	res := buf[0]
+	if res != byte(1) {
 		return errors.New("failed to subscribe to channel")
 	}
 	c.Channel = channel
@@ -113,51 +113,64 @@ func (c *Client) Publish(channel string, message string) error {
 		return errors.New("not connected")
 	}
 
+	// c.Connection.SetWriteDeadline(time.Now().Add(5 * time.Millisecond))
 	_, err = c.Connection.Write(msgBytes)
 	if err != nil {
 		return err
 	}
-	log.Println("published message to channel:", channel)
-	buf := make([]byte, 1024)
-	n, err := c.Connection.Read(buf)
+	// log.Println("published message to channel:", channel)
+	buf := make([]byte, 1)
+	_, err = c.Connection.Read(buf)
 	if err != nil {
 		return err
 	}
-	res := &pbsb.PublishResponse{}
-	if proto.Unmarshal(buf[:n], res); err != nil {
-		return errors.New("invalid response from broker")
+	res := buf[0]
+	if res != byte(1) {
+		return errors.New("failed to publish message")
 	}
-	if !res.Success {
-		return errors.New("failed to publish to channel")
-	}
-	log.Println("Got response from broker")
+	// log.Println("Got response from broker")
 	return nil
 }
 
-func (c *Client) Receive() (*pbsb.Message, error) {
-	buf := make([]byte, 1024)
-	n, err := c.Connection.Read(buf)
+func (c *Client) Receive() ([]byte, error) {
+	lenBuff := make([]byte, 4)
+	_, err := c.Connection.Read(lenBuff)
 	if err != nil {
 		return nil, err
 	}
-	msg := &pbsb.Message{}
-	if err = proto.Unmarshal(buf[:n], msg); err != nil {
+	msgBuf := make([]byte, binary.BigEndian.Uint32(lenBuff))
+	_, err = c.Connection.Read(msgBuf)
+	if err != nil {
 		return nil, err
 	}
-	return msg, nil
+
+	return msgBuf, nil
 }
 
 func (c *Client) Listen() error {
-	log.Println("listening for messages on channel:", c.Channel)
+	fmt.Printf("listening for messages on channel: %s\n", c.Channel)
+	for i := 0; i < 8; i++ {
+		go func() {
+			bytes := <-c.Queue
+			msg := &pbsb.Message{}
+			if err := proto.Unmarshal(bytes, msg); err != nil {
+				fmt.Printf("error unmarshaling message: %v\n", err)
+				return
+			}
+
+			if msg.Topic == c.Channel {
+				fmt.Printf("received message for topic %s, message: %s\n", msg.Topic, msg.Message)
+			} else {
+				fmt.Printf("received message for topic %s, but subscribed to %s\n", msg.Topic, c.Channel)
+			}
+		}()
+	}
 	for {
-		msg, err := c.Receive()
+		bytes, err := c.Receive()
 		if err != nil {
+			fmt.Printf("error receiving message: %v\n", err)
 			return err
 		}
-		if msg.Topic == c.Channel {
-			println(msg.Message)
-		} else {
-			log.Printf("received message for topic %s, but subscribed to %s", msg.Topic, c.Channel)
-		}
+		c.Queue <- bytes
 	}
 }

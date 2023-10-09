@@ -1,0 +1,1 @@
+./bin/load-test.exe localhost:8080 test hey 200 4000
